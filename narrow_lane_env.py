@@ -9,7 +9,6 @@ import numpy as np
 from typing import Dict, Tuple
 from highway_env import utils
 from highway_env.envs.common.abstract import AbstractEnv
-from highway_env.envs.common.action import Action
 from highway_env.road.road import Road, RoadNetwork
 from highway_env.road.lane import StraightLane, LineType
 from highway_env.vehicle.controller import ControlledVehicle
@@ -43,12 +42,12 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
                 "type": "DiscreteMetaAction",
             },
             "lanes_count": 2,  # Narrow road: only 2 lanes
-            "vehicles_count": 8,  # Variable traffic density (reduced from 10)
+            "vehicles_count": 10,  # Variable traffic density (reduced from 10)
             "controlled_vehicles": 1,
             "initial_lane_id": None,
-            "duration": 40,  # seconds
+            "duration": 80,  # seconds
             "ego_spacing": 2,
-            "vehicles_density": 1.5,  # Reduced density for easier learning
+            "vehicles_density": 1,  # Reduced density for easier learning
             "collision_reward": 0,  # High penalty for collision
             "right_lane_reward": 0,
             "high_speed_reward": 0,
@@ -96,7 +95,7 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
             "a", "b",
             StraightLane(
                 [0, 0], 
-                [1000, 0],  # Long straight road
+                [2000, 0],  # Long straight road
                 line_types=(LineType.CONTINUOUS, LineType.STRIPED),
                 width=lane_width,
                 speed_limit=speedlimit
@@ -106,7 +105,7 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
             "a", "b",
             StraightLane(
                 [0, lane_width], 
-                [1000, lane_width],
+                [2000, lane_width],
                 line_types=(LineType.NONE, LineType.CONTINUOUS),
                 width=lane_width,
                 speed_limit=speedlimit
@@ -115,7 +114,7 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
         net.add_lane(
             "b", "a",
             StraightLane(
-                [1000, lane_width], 
+                [2000, lane_width], 
                 [0, lane_width],
                 line_types=(LineType.NONE, LineType.NONE),
                 width=lane_width,
@@ -151,30 +150,35 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
             else:
                 lane_from, lane_to = "b", "a"  # oncoming traffic
             
-            lane=road.network.get_lane((lane_from, lane_to, 0))
-
-            position=lane.position(self.np_random.uniform(
+            lane = road.network.get_lane((lane_from, lane_to, 0))
+            
+            # Use proper longitudinal position along the lane
+            longitudinal_position = self.np_random.uniform(
                 low=50 + i * 80 / vehicles_count,
-                high=50 + (i + 1) * 800 / vehicles_count), 0
-                )
+                high=50 + (i + 1) * 1600 / vehicles_count
+            )
             
-            long=70.0 + 40.0 * float(i)
+            # Get position and heading from the lane
+            position = lane.position(longitudinal_position, 0)
+            heading = lane.heading_at(longitudinal_position)
             
-            heading=lane.heading_at(long)
-            
-            speed=self.np_random.uniform(
+            speed = self.np_random.uniform(
                 low=self.config["min_speed"],
                 high=self.config["max_speed"] * 0.8
             )
 
-            self.road.vehicles.append(
-                vehicles_type(
-                    road,
-                    position,
-                    heading,
-                    speed
-                )
+            # Create vehicle and disable lane changing
+            vehicle = vehicles_type(
+                road,
+                position,
+                heading=heading,
+                speed=speed
             )
+            vehicle.LANE_CHANGE_MAX_BRAKING_IMPOSED = 1000  
+            vehicle.LANE_CHANGE_MIN_ACC_GAIN = 1000  
+            vehicle.LANE_CHANGE_DELAY = 1000 
+            
+            self.road.vehicles.append(vehicle)
 
     def _reward(self, action: int) -> float:
         """
@@ -206,15 +210,12 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
 
     def _rewards(self, action: int) -> Dict[str, float]:
         """Compute individual reward components."""
-        neighbours = self.road.network.all_side_lanes(self.vehicle.lane_index)
-
         current_lane = self.vehicle.lane_index[2]
         
         # Check if lane changed
         lane_changed = current_lane != self.last_lane
         
-        # Check if lane change was safe
-        safe_lane_change = True
+        # Check if lane change was unsafe
         if lane_changed:
             # Check for nearby vehicles during lane change
             for v in self.road.vehicles:
@@ -223,7 +224,6 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
                     if distance < 15:  # Within 15 meters
                         relative_speed = np.linalg.norm(v.velocity - self.vehicle.velocity)
                         if relative_speed > 5:  # Significant speed difference
-                            safe_lane_change = False
                             self.unsafe_lane_change = True
                             break
         
@@ -236,11 +236,6 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
             "lane_change_reward": 1.0 if lane_changed else 0.0,
             "unsafe_lane_change_penalty": 0 if self.unsafe_lane_change else 0.0,
         }
-        
-        # Speed penalty (discourage high speeds in narrow lanes)
-        speed = np.linalg.norm(self.vehicle.velocity)
-        speed_penalty = -self.config["speed_penalty_factor"] * speed
-        rewards["speed_penalty"] = 0
         
         # Reset unsafe flag
         if self.unsafe_lane_change and not lane_changed:
