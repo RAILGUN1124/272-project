@@ -12,7 +12,7 @@ This environment models a constrained road scenario where the agent must navigat
 ## Environment Details
 
 ### Road Structure
-- **2 lanes** in the same direction (`a → b`)
+- **1 lanes** in the same direction (`a → b`), another "ghost" lane to allow the controlled vehicle to takeover other vehicles
 - **1 oncoming lane** for traffic (`b → a`)
 - **10 traffic vehicles** spawned with random speeds (5-20 m/s)
 - Traffic vehicles **do not change lanes** (disabled via lane change parameters)
