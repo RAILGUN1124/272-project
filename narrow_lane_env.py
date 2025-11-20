@@ -43,13 +43,13 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
                 "type": "DiscreteMetaAction",
             },
             "lanes_count": 2,  # Narrow road: only 2 lanes
-            "vehicles_count": 15,  # Variable traffic density (reduced from 10)
+            "vehicles_count": 8,  # Variable traffic density (reduced from 10)
             "controlled_vehicles": 1,
             "initial_lane_id": None,
             "duration": 40,  # seconds
             "ego_spacing": 2,
             "vehicles_density": 1.5,  # Reduced density for easier learning
-            "collision_reward": -2.0,  # High penalty for collision
+            "collision_reward": 0,  # High penalty for collision
             "right_lane_reward": 0,
             "high_speed_reward": 0,
             "lane_change_reward": 0.2,  # Reward successful lane changes
@@ -69,9 +69,9 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
             "max_speed": 25,  # Limited max speed (m/s, ~90 km/h)
             "min_speed": 5,
             # Safety parameters
-            "unsafe_lane_change_penalty": -0.5,
+            "unsafe_lane_change_penalty": 0,
             "survival_reward": 0.1,  # Reward for staying alive
-            "speed_penalty_factor": 0.01,  # Penalty for high speeds
+            "speed_penalty_factor": 0,  # Penalty for high speeds
         })
         return config
 
@@ -107,7 +107,17 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
             StraightLane(
                 [0, lane_width], 
                 [1000, lane_width],
-                line_types=(LineType.STRIPED, LineType.CONTINUOUS),
+                line_types=(LineType.NONE, LineType.CONTINUOUS),
+                width=lane_width,
+                speed_limit=speedlimit
+            )
+        )
+        net.add_lane(
+            "b", "a",
+            StraightLane(
+                [1000, lane_width], 
+                [0, lane_width],
+                line_types=(LineType.NONE, LineType.NONE),
                 width=lane_width,
                 speed_limit=speedlimit
             )
@@ -123,39 +133,48 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
     def _create_vehicles(self) -> None:
         """Create ego vehicle and traffic vehicles."""
         road = self.road
+
         ego_vehicle = self.action_type.vehicle_class(
-            road,
-            road.network.get_lane(("a", "b", 0)).position(30, 0),
-            speed=15
+            road, road.network.get_lane(("a", "b", 0)).position(30.0, 0.0), speed=30.0
         )
         road.vehicles.append(ego_vehicle)
         self.vehicle = ego_vehicle
 
-        # Create traffic with variable density
+        # --- Traffic vehicles
         vehicles_count = self.config["vehicles_count"]
+        vehicles_type = utils.class_from_path(self.config["other_vehicles_type"])
         for i in range(vehicles_count):
-            lane_idx = self.np_random.integers(0, 2)
-            longitudinal = self.np_random.uniform(
+            lane_idx = self.np_random.integers(0, 2)  # 0 or 1
+
+            if lane_idx == 0:
+                lane_from, lane_to = "a", "b"  # same direction as ego
+            else:
+                lane_from, lane_to = "b", "a"  # oncoming traffic
+            
+            lane=road.network.get_lane((lane_from, lane_to, 0))
+
+            position=lane.position(self.np_random.uniform(
                 low=50 + i * 80 / vehicles_count,
-                high=50 + (i + 1) * 800 / vehicles_count
-            )
-            speed = self.np_random.uniform(
+                high=50 + (i + 1) * 800 / vehicles_count), 0
+                )
+            
+            long=70.0 + 40.0 * float(i)
+            
+            heading=lane.heading_at(long)
+            
+            speed=self.np_random.uniform(
                 low=self.config["min_speed"],
                 high=self.config["max_speed"] * 0.8
             )
-            
-            vehicle = Vehicle.create_random(
-                road,
-                speed=speed,
-                lane_from="a",
-                lane_to="b",
-                lane_id=lane_idx,
-                spacing=1 / self.config["vehicles_density"]
+
+            self.road.vehicles.append(
+                vehicles_type(
+                    road,
+                    position,
+                    heading,
+                    speed
+                )
             )
-            vehicle.position = road.network.get_lane(("a", "b", lane_idx)).position(
-                longitudinal, 0
-            )
-            road.vehicles.append(vehicle)
 
     def _reward(self, action: int) -> float:
         """
@@ -188,6 +207,7 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
     def _rewards(self, action: int) -> Dict[str, float]:
         """Compute individual reward components."""
         neighbours = self.road.network.all_side_lanes(self.vehicle.lane_index)
+
         current_lane = self.vehicle.lane_index[2]
         
         # Check if lane changed
@@ -213,14 +233,14 @@ class NarrowLaneSafeChangeEnv(AbstractEnv):
         rewards = {
             "collision_reward": float(self.vehicle.crashed),
             "survival_reward": 1.0 if not self.vehicle.crashed else 0.0,
-            "lane_change_reward": 1.0 if lane_changed and safe_lane_change else 0.0,
-            "unsafe_lane_change_penalty": 1.0 if self.unsafe_lane_change else 0.0,
+            "lane_change_reward": 1.0 if lane_changed else 0.0,
+            "unsafe_lane_change_penalty": 0 if self.unsafe_lane_change else 0.0,
         }
         
         # Speed penalty (discourage high speeds in narrow lanes)
         speed = np.linalg.norm(self.vehicle.velocity)
         speed_penalty = -self.config["speed_penalty_factor"] * speed
-        rewards["speed_penalty"] = speed_penalty
+        rewards["speed_penalty"] = 0
         
         # Reset unsafe flag
         if self.unsafe_lane_change and not lane_changed:
